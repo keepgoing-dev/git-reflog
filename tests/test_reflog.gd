@@ -48,3 +48,76 @@ func test_other_commits_are_income() -> void:
     for m in ["commit: x", "commit (initial): x", "commit (merge): x"]:
         assert_true(R.is_income(m), "%s should be income" % m)
     assert_false(R.is_income("checkout: moving"), "a checkout is never income")
+
+var _tmp: String
+
+func before_each() -> void:
+    _tmp = "user://test_reflog_%d.log" % randi()
+
+func after_each() -> void:
+    DirAccess.remove_absolute(ProjectSettings.globalize_path(_tmp))
+
+func _write(text: String) -> String:
+    var f := FileAccess.open(_tmp, FileAccess.WRITE)
+    f.store_string(text)
+    f.close()
+    return ProjectSettings.globalize_path(_tmp)
+
+func _line(ts: int, msg: String) -> String:
+    return "aaa bbb t <t@t> %d +0000\t%s\n" % [ts, msg]
+
+func test_reads_all_entries_from_offset_zero() -> void:
+    var p := _write(_line(100, "commit: one") + _line(200, "commit: two"))
+    var r := R.read_from(p, 0)
+    assert_eq(r["entries"].size(), 2)
+    assert_eq(r["entries"][0]["ts"], 100)
+    assert_false(r["restarted"])
+
+func test_reads_only_new_entries_on_second_call() -> void:
+    var first := _line(100, "commit: one")
+    var p := _write(first)
+    var r1 := R.read_from(p, 0)
+    assert_eq(r1["entries"].size(), 1)
+    _write(first + _line(200, "commit: two"))
+    var r2 := R.read_from(p, r1["offset"])
+    assert_eq(r2["entries"].size(), 1, "only the appended line is returned")
+    assert_eq(r2["entries"][0]["ts"], 200)
+
+func test_offset_is_a_byte_offset_not_a_character_offset() -> void:
+    # A commit message with multibyte characters makes character counting wrong, and the
+    # symptom is a permanently misaligned offset that silently drops or duplicates work.
+    var first := _line(100, "commit: héllo 🚀 wörld")
+    var p := _write(first)
+    var r1 := R.read_from(p, 0)
+    assert_eq(r1["offset"], first.to_utf8_buffer().size(),
+        "offset must equal the byte length of what was consumed")
+    _write(first + _line(200, "commit: next"))
+    var r2 := R.read_from(p, r1["offset"])
+    assert_eq(r2["entries"].size(), 1)
+    assert_eq(r2["entries"][0]["message"], "commit: next")
+
+func test_restarts_when_gc_truncated_the_file() -> void:
+    var p := _write(_line(100, "commit: one") + _line(200, "commit: two"))
+    var stale_offset := 10_000
+    var r := R.read_from(p, stale_offset)
+    assert_true(r["restarted"], "a file shorter than the stored offset means gc pruned it")
+    assert_eq(r["entries"].size(), 2, "everything is re-read so the caller can filter by ts")
+
+func test_does_not_consume_a_partially_written_line() -> void:
+    # git may be caught mid-append. Consuming a half line would corrupt the offset forever.
+    var complete := _line(100, "commit: one")
+    var p := _write(complete + "aaa bbb t <t@t> 200 +0000\tcommit: half-writ")
+    var r := R.read_from(p, 0)
+    assert_eq(r["entries"].size(), 1, "only the complete line is returned")
+    assert_eq(r["offset"], complete.to_utf8_buffer().size(), "offset stops at the last newline")
+
+func test_missing_file_is_not_an_error() -> void:
+    var r := R.read_from("/definitely/not/here/logs/HEAD", 0)
+    assert_eq(r["entries"], [])
+    assert_eq(r["offset"], 0, "offset is unchanged so a remounted repo resumes correctly")
+
+func test_empty_file_yields_nothing() -> void:
+    var p := _write("")
+    var r := R.read_from(p, 0)
+    assert_eq(r["entries"], [])
+    assert_eq(r["offset"], 0)
