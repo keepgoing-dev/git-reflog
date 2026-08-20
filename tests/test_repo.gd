@@ -104,3 +104,43 @@ func test_a_new_worktree_appears_on_re_enumeration() -> void:
     OS.execute("git", ["-C", _main, "worktree", "add", "-q", wt_c, "-b", "feature-c"], out, true)
     var after := Repo.enumerate_reflogs(Repo.resolve(_main)).size()
     assert_eq(after, before + 1, "re-enumeration picks up a worktree created while running")
+
+func test_discovers_repositories_under_a_root() -> void:
+    # The fixture's parent holds main/, lib/, wt-a/, wt-b/ and (from an earlier test) wt-c/.
+    var root := _main.get_base_dir()
+    var found := Repo.discover(root)
+    assert_has(found, _main.path_join(".git"), "the main repository")
+    assert_has(found, root.path_join("lib/.git"), "the standalone submodule source")
+
+func test_discover_deduplicates_worktrees_of_one_repository() -> void:
+    # wt-a and wt-b both normalise to <main>/.git. Counting them separately would count
+    # every commit two or three times over.
+    var root := _main.get_base_dir()
+    var found := Repo.discover(root)
+    var main_git := _main.path_join(".git")
+    var hits := 0
+    for g in found:
+        if g == main_git:
+            hits += 1
+    assert_eq(hits, 1, "worktrees of one repository collapse to a single git dir")
+
+func test_discover_skips_dependency_directories() -> void:
+    var root := _main.get_base_dir()
+    var buried := root.path_join("node_modules/some-package")
+    DirAccess.make_dir_recursive_absolute(buried)
+    var out: Array = []
+    OS.execute("git", ["init", "-q", buried], out, true)
+    var found := Repo.discover(root)
+    assert_does_not_have(found, buried.path_join(".git"),
+        "node_modules is skipped, or scanning a real workspace takes a minute")
+
+func test_discover_respects_max_depth() -> void:
+    var root := _main.get_base_dir()
+    var deep := root.path_join("a/b/c/d/e/f")
+    DirAccess.make_dir_recursive_absolute(deep)
+    var out: Array = []
+    OS.execute("git", ["init", "-q", deep], out, true)
+    assert_does_not_have(Repo.discover(root, 2), deep.path_join(".git"))
+
+func test_discover_of_a_missing_root_is_empty() -> void:
+    assert_eq(Repo.discover("/definitely/not/here"), [] as Array[String])

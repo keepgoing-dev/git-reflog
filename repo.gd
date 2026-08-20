@@ -100,3 +100,39 @@ static func _subdirs(dir: String) -> PackedStringArray:
     if not DirAccess.dir_exists_absolute(dir):
         return PackedStringArray()
     return DirAccess.get_directories_at(dir)
+
+## Directories that never contain a repository worth tracking, and that are enormous.
+## Without this list, scanning a real workspace walks hundreds of thousands of files.
+const SKIP_DIRS := ["node_modules", "target", ".venv", "venv", "dist", "build",
+                    "Pods", ".next", ".git", "vendor/bundle", "__pycache__",
+                    ".gradle", "DerivedData"]
+
+## Every repository under `root`, deduplicated by git directory.
+##
+## Deduplication matters more than it looks: several linked worktrees of one repository all
+## normalise to the same git directory, and counting them separately would pay for every
+## commit two or three times.
+static func discover(root: String, max_depth: int = 4) -> Array[String]:
+    var seen := {}
+    _walk(root, max_depth, seen)
+    var out: Array[String] = []
+    for g in seen:
+        out.append(g)
+    out.sort()
+    return out
+
+static func _walk(dir: String, depth: int, seen: Dictionary) -> void:
+    if depth < 0 or not DirAccess.dir_exists_absolute(dir):
+        return
+
+    var git_dir := resolve(dir)
+    if not git_dir.is_empty():
+        seen[git_dir] = true
+        # A repository's own subdirectories are not scanned for further repositories.
+        # Submodules are found through enumerate_reflogs, which is the correct route.
+        return
+
+    for name in _subdirs(dir):
+        if SKIP_DIRS.has(name) or name.begins_with("."):
+            continue
+        _walk(dir.path_join(name), depth - 1, seen)
