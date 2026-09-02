@@ -107,7 +107,11 @@ const SKIP_DIRS := ["node_modules", "target", ".venv", "venv", "dist", "build",
                     "Pods", ".next", ".git", "vendor/bundle", "__pycache__",
                     ".gradle", "DerivedData"]
 
-## Every repository under `root`, deduplicated by git directory.
+## Every repository under `root`, as project folders, deduplicated by git directory.
+##
+## Folders and not git directories, because that is what a caller can hand back to
+## `resolve`: a repository that moves keeps working, and there is no way to walk from a
+## submodule's git dir at `<main>/.git/modules/vendor/lib` back to its folder.
 ##
 ## Deduplication matters more than it looks: several linked worktrees of one repository all
 ## normalise to the same git directory, and counting them separately would pay for every
@@ -116,8 +120,8 @@ static func discover(root: String, max_depth: int = 4) -> Array[String]:
     var seen := {}
     _walk(root, max_depth, seen)
     var out: Array[String] = []
-    for g in seen:
-        out.append(g)
+    for git_dir in seen:
+        out.append(seen[git_dir])
     out.sort()
     return out
 
@@ -127,7 +131,14 @@ static func _walk(dir: String, depth: int, seen: Dictionary) -> void:
 
     var git_dir := resolve(dir)
     if not git_dir.is_empty():
-        seen[git_dir] = true
+        # Prefer the main worktree's folder when several worktrees of one repository turn
+        # up. A linked worktree keeps `.git` as a file rather than a directory, so that is
+        # the test. Without it the folder recorded is whichever the directory listing
+        # happened to reach first, and the player is offered "wt-a" where they expect the
+        # project. Two linked worktrees and no main worktree under the root still falls back
+        # to first reached, because there is no better answer available.
+        if not seen.has(git_dir) or DirAccess.dir_exists_absolute(dir.path_join(".git")):
+            seen[git_dir] = dir
         # A repository's own subdirectories are not scanned for further repositories.
         # Submodules are found through enumerate_reflogs, which is the correct route.
         return
