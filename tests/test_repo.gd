@@ -125,6 +125,27 @@ func test_discover_deduplicates_worktrees_of_one_repository() -> void:
     assert_does_not_have(found, root.path_join("wt-a"),
         "and the folder kept is the main worktree, not whichever the listing reached first")
 
+func test_discover_prefers_the_main_worktree_regardless_of_visit_order() -> void:
+    # Repo.discover() can't pin this: DirAccess.get_directories_at() order is OS-dependent,
+    # so a real walk over main/wt-a/wt-b never proves which one _walk reaches first, only
+    # which one this filesystem happens to list first. Calling the private _walk directly
+    # makes visit order ours, which is the only way to catch a "first-reached-wins"
+    # implementation that would otherwise pass this suite by luck of directory order.
+    var wt_a := _main.get_base_dir().path_join("wt-a")
+    var git_dir := Repo.resolve(_main)
+
+    var linked_first := {}
+    Repo._walk(wt_a, 0, linked_first)
+    Repo._walk(_main, 0, linked_first)
+    assert_eq(linked_first[git_dir], _main,
+        "seeing the linked worktree first must not keep it once main is seen")
+
+    var main_first := {}
+    Repo._walk(_main, 0, main_first)
+    Repo._walk(wt_a, 0, main_first)
+    assert_eq(main_first[git_dir], _main,
+        "seeing main first must not let a later linked worktree displace it")
+
 func test_discover_skips_dependency_directories() -> void:
     var root := _main.get_base_dir()
     var buried := root.path_join("node_modules/some-package")
