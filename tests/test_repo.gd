@@ -109,20 +109,42 @@ func test_discovers_repositories_under_a_root() -> void:
     # The fixture's parent holds main/, lib/, wt-a/, wt-b/ and (from an earlier test) wt-c/.
     var root := _main.get_base_dir()
     var found := Repo.discover(root)
-    assert_has(found, _main.path_join(".git"), "the main repository")
-    assert_has(found, root.path_join("lib/.git"), "the standalone submodule source")
+    assert_has(found, _main, "the main repository's folder, not its git dir")
+    assert_has(found, root.path_join("lib"), "the standalone submodule source")
 
 func test_discover_deduplicates_worktrees_of_one_repository() -> void:
     # wt-a and wt-b both normalise to <main>/.git. Counting them separately would count
     # every commit two or three times over.
     var root := _main.get_base_dir()
     var found := Repo.discover(root)
-    var main_git := _main.path_join(".git")
     var hits := 0
-    for g in found:
-        if g == main_git:
+    for path in found:
+        if path == _main:
             hits += 1
-    assert_eq(hits, 1, "worktrees of one repository collapse to a single git dir")
+    assert_eq(hits, 1, "worktrees of one repository collapse to a single folder")
+    assert_does_not_have(found, root.path_join("wt-a"),
+        "and the folder kept is the main worktree, not whichever the listing reached first")
+
+func test_discover_prefers_the_main_worktree_regardless_of_visit_order() -> void:
+    # Repo.discover() can't pin this: DirAccess.get_directories_at() order is OS-dependent,
+    # so a real walk over main/wt-a/wt-b never proves which one _walk reaches first, only
+    # which one this filesystem happens to list first. Calling the private _walk directly
+    # makes visit order ours, which is the only way to catch a "first-reached-wins"
+    # implementation that would otherwise pass this suite by luck of directory order.
+    var wt_a := _main.get_base_dir().path_join("wt-a")
+    var git_dir := Repo.resolve(_main)
+
+    var linked_first := {}
+    Repo._walk(wt_a, 0, linked_first)
+    Repo._walk(_main, 0, linked_first)
+    assert_eq(linked_first[git_dir], _main,
+        "seeing the linked worktree first must not keep it once main is seen")
+
+    var main_first := {}
+    Repo._walk(_main, 0, main_first)
+    Repo._walk(wt_a, 0, main_first)
+    assert_eq(main_first[git_dir], _main,
+        "seeing main first must not let a later linked worktree displace it")
 
 func test_discover_skips_dependency_directories() -> void:
     var root := _main.get_base_dir()
@@ -131,7 +153,7 @@ func test_discover_skips_dependency_directories() -> void:
     var out: Array = []
     OS.execute("git", ["init", "-q", buried], out, true)
     var found := Repo.discover(root)
-    assert_does_not_have(found, buried.path_join(".git"),
+    assert_does_not_have(found, buried,
         "node_modules is skipped, or scanning a real workspace takes a minute")
 
 func test_discover_respects_max_depth() -> void:
@@ -140,7 +162,7 @@ func test_discover_respects_max_depth() -> void:
     DirAccess.make_dir_recursive_absolute(deep)
     var out: Array = []
     OS.execute("git", ["init", "-q", deep], out, true)
-    assert_does_not_have(Repo.discover(root, 2), deep.path_join(".git"))
+    assert_does_not_have(Repo.discover(root, 2), deep)
 
 func test_discover_of_a_missing_root_is_empty() -> void:
     assert_eq(Repo.discover("/definitely/not/here"), [] as Array[String])
